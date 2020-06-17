@@ -1,0 +1,259 @@
+module throttleControl: 
+
+function regulateThrottle(boolean, float, float) : float;
+
+input isGoingOn : boolean;
+input cruiseSpeed : float;
+input vehicleSpeed : float;
+input accelerator : float;
+input cruiseControlState : integer;
+output throttleCmd : float;
+
+loop
+	await tick;
+
+	if ?cruiseControlState = 2 then % when cruisecontrol is ON
+		emit throttleCmd(regulateThrottle(?isGoingOn, ?cruiseSpeed, ?vehicleSpeed));
+	else 
+		emit throttleCmd(?accelerator);
+	end if; 
+end loop
+
+end module
+
+module speedDetection: 
+
+input vehicleSpeed : float;
+output speedLimit; %signal
+
+%min/max parameters
+constant minSpeed = 30.0f : float;
+constant maxSpeed = 150.0f : float;
+
+loop 
+
+	await tick;
+	if ?vehicleSpeed < minSpeed or ?vehicleSpeed > maxSpeed then
+		emit speedLimit;
+	end if;
+
+end loop 
+
+end module
+
+module inputDetection: 
+
+input brake : float;
+output brakeSensor; 
+
+input accelerator : float;
+output acceleratorSensor; 
+
+constant pedalsMin = 3.0f : float;
+
+loop
+
+	await tick;
+	if ?brake > pedalsMin then
+		emit brakeSensor;
+	elsif ?accelerator > pedalsMin then 
+		emit acceleratorSensor;
+	end if;
+
+end loop
+
+end module
+
+module cruiseSpeedControl: 
+
+input set;
+input quickAccel;
+input quickDecel;
+input vehicleSpeed : float;
+input cruiseControlState : integer;
+output cruiseSpeed : float;
+
+constant minSpeed = 30.0f : float;
+constant maxSpeed = 150.0f : float;
+constant changeThreshold = 2.5f : float;
+
+var speedHolder := ?vehicleSpeed : float in
+
+loop 
+
+	await tick;
+	if (?cruiseControlState = 1) then
+		speedHolder := 0.0f;
+	else 		
+		 
+		if ?cruiseControlState = 2 and pre(?cruiseControlState) = 1 then
+			speedHolder := ?vehicleSpeed;
+		end if;
+
+		present set then
+			speedHolder := ?vehicleSpeed;
+		end present;
+
+		present quickDecel and not (set or quickAccel) then
+			speedHolder := speedHolder - changeThreshold;
+		end present;
+
+		present quickAccel and not (set or quickDecel) then
+			speedHolder := speedHolder + changeThreshold;
+		end present;
+
+		
+		% if needed set values within range
+		if speedHolder < minSpeed then 
+			speedHolder := minSpeed;
+		elsif speedHolder > maxSpeed then
+			speedHolder := maxSpeed;
+		end if;
+
+	end if;	
+
+	emit cruiseSpeed(speedHolder);
+
+end loop; 
+
+end var;
+
+end module
+
+module cruiseStateControl: 
+
+input on;
+input off;
+input resume;
+input speedLimit;
+input brakeSensor;
+input acceleratorSensor;
+
+output cruiseControlState : integer; %1 = OFF; 2 = ON; 3 = STDBY; 4 = DISABLED
+output isGoingOn : boolean;
+
+var state := 1 : integer in %initial state of OFF
+var resetPIController := false : boolean in 
+
+loop 
+
+	await tick;
+	resetPIController := false;
+
+	if state = 1 then
+		present (on and not off) then
+			state := 2;
+			resetPIController := true;
+		end present;
+	elsif state = 2 then 
+		present (off and not on) then 
+			state := 1;
+		end present;
+		present (brakeSensor and not off) then
+			state := 3;
+		end present;
+		present ((acceleratorSensor or speedLimit) and not brakeSensor and not off) then 
+			state := 4;
+		end present;
+	elsif state = 3 then 
+		present (off and not on) then 
+			state := 1;
+		end present;
+		present (resume and not (brakeSensor or speedLimit or acceleratorSensor or off)) then 
+			state := 2;
+			resetPIController := true;
+		end present;
+		present (resume and (acceleratorSensor or speedLimit) and not off) then 
+			state := 4;
+		end present;
+	elsif state = 4 then
+		present (off and not on) then 
+			state := 1;
+		end present;
+		present (not(acceleratorSensor or speedLimit or brakeSensor or off)) then 
+			state := 2;
+			resetPIController := true;
+		end present;
+		present (brakeSensor and not (off or acceleratorSensor)) then 		
+			state := 3;
+		end present;
+	end if;
+
+	emit isGoingOn(resetPIController);
+	emit cruiseControlState(state);
+
+end loop
+
+end var;
+end var;
+
+end module
+
+module cruiseControl:
+
+%defining signals outlined as per assignment brief
+input on; 
+input off; 
+input resume; 
+input set; 
+input quickAccel; 
+input quickDecel; 
+input accelerator : float; 
+input brake : float; 
+input vehicleSpeed : float; 
+
+output cruiseSpeed : float; 
+output throttleCmd : float; 
+output cruiseControlState : integer; %1 = OFF; 2 = ON; 3 = STDBY; 4 = DISABLED
+
+signal isGoingOn : boolean in
+signal speedLimit in
+signal brakeSensor in 
+signal acceleratorSensor in 
+
+run throttleControl [
+	signal isGoingOn/isGoingOn;
+	signal cruiseSpeed/cruiseSpeed;
+	signal vehicleSpeed/vehicleSpeed;
+	signal accelerator/accelerator;
+	signal cruiseControlState/cruiseControlState;
+	signal throttleCmd/throttleCmd
+	] 
+|| run speedDetection [
+	signal vehicleSpeed/vehicleSpeed;
+	signal speedLimit/speedLimit
+	]
+|| run inputDetection [
+	signal accelerator/accelerator;
+	signal brake/brake;
+	signal acceleratorSensor/acceleratorSensor;
+	signal brakeSensor/brakeSensor
+	]
+|| run cruiseSpeedControl [
+	signal set/set;
+	signal quickAccel/quickAccel;
+	signal quickDecel/quickDecel;
+	signal vehicleSpeed/vehicleSpeed;
+	signal cruiseControlState/cruiseControlState;
+	signal cruiseSpeed/cruiseSpeed
+	]
+|| run cruiseStateControl [
+	signal on/on;
+	signal off/off;
+	signal resume/resume;
+	signal speedLimit/speedLimit;
+	signal brakeSensor/brakeSensor;
+	signal acceleratorSensor/acceleratorSensor
+	]
+
+end signal;
+end signal;
+end signal;
+end signal;
+
+end module
+
+
+
+
+
